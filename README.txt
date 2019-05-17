@@ -364,6 +364,7 @@ Modules
       a database module which builds a module for a specific model.
 
 Middleware
+
   Middleware is a function which is called before the route handler.
   Middleware functions have access to the request and response objects, and
     the next() middleware function in the application’s request-response cycle.
@@ -466,6 +467,7 @@ Middleware
       await app.listen(3000);
 
 Exceptions
+
   Base exceptions
     The built-in HttpException class is exposed from the @nestjs/common
       package.
@@ -525,6 +527,7 @@ Exceptions
       GatewayTimeoutException
 
 Exception filters
+
   Nest comes with a built-in exceptions layer which is responsible for
     processing all unhandled exceptions across an application. When an
     exception is not handled by your application code, it is caught by
@@ -639,7 +642,7 @@ Exception filters
         }
         bootstrap();
       Warning: The useGlobalFilters() method does not set up filters for
-        gateways or hybrid applications.
+        gateways or hybrid applications (defined later).
       Global-scoped filters are used across the whole application, for
         every controller and every route handler. In terms of dependency
         injection, global filters registered from outside of any module
@@ -679,3 +682,533 @@ Exception filters
             // ...
           }
         }
+
+Pipes
+
+  Pipes fit in the request stream, between nest and your controller.
+  A pipe is a class annotated with the @Injectable() decorator.
+  Pipes should implement the PipeTransform interface.
+  Pipes are typically used for:
+    Transformation -- transform input data to the desired output.
+    Validation -- evaluate input data and if valid, simply pass it
+      through unchanged; otherwise, throw an exception when the data is
+      incorrect.
+  Pipes get the arguments that will be handed to the controller.
+  Any exception thrown by a pipe will be caught by exception filters.
+  Nest has two pipes available:
+    ValidationPipe
+    ParseIntPipe
+  Most basic validation type pipe:
+    Code:
+      import { PipeTransform, Injectable, ArgumentMetadata } from '@nestjs/common';
+
+      @Injectable()
+      export class ValidationPipe implements PipeTransform {
+        transform(value: any, metadata: ArgumentMetadata) {
+          return value;
+        }
+      }
+    This example does nothing to the value, just passes it on unchanged.
+  PipeTransform<T, R> is a generic interface in which T indicates the type of the
+    input value, and R indicates the return type of the transform() method.
+  The value is the currently processed argument (before it is received by the
+    route handling method), while metadata is its metadata.
+  The metadata object has these properties:
+    Code:
+      export interface ArgumentMetadata {
+        readonly type: 'body' | 'query' | 'param' | 'custom';
+        readonly metatype?: Type<any>;
+        readonly data?: string;
+      }
+  These properties describe the currently processed argument.
+    type - Indicates whether the argument is a body @Body(), query @Query(),
+      param @Param(), or a custom parameter.
+    metatype - Provides the metatype of the argument, for example, String.
+      Note: the value is undefined if you either omit a type declaration
+      in the route handler method signature, or use vanilla JavaScript.
+    data - The string passed to the decorator, for example @Body('string').
+      It's undefined if you leave the decorator parenthesis empty.
+  Warning - TypeScript interfaces disappear during transpilation. Thus, if
+    a method parameter's type is declared as an interface instead of a class,
+    the metatype value will be Object.
+  Example, using Joi schema for object validation.
+    Code:
+      import * as Joi from 'joi';
+      import { PipeTransform, Injectable, ArgumentMetadata, BadRequestException } from '@nestjs/common';
+
+      @Injectable()
+      export class JoiValidationPipe implements PipeTransform {
+        constructor(private readonly schema: Object) {}
+
+        transform(value: any, metadata: ArgumentMetadata) {
+          const { error } = Joi.validate(value, this.schema);
+          if (error) {
+            throw new BadRequestException('Validation failed');
+          }
+          return value;
+        }
+      }
+  Binding pipes
+    Binding pipes (tying them to the appropriate controller or handler)
+      is very straightforward. We use the @UsePipes() decorator and create
+      a pipe instance, passing it a Joi validation schema.
+        Code:
+          const createCatSchema = // ... build the Joi schema
+          @Post()
+          @UsePipes(new JoiValidationPipe(createCatSchema))
+          async create(@Body() createCatDto: CreateCatDto) {
+            this.catsService.create(createCatDto);
+          }
+  Class validator
+    Does magic meta-level validation.  Apparently what ValidationPipe is.
+      See the docs.
+    ValidationPipe requires both class-validator and class-transformer
+      packages to be installed.
+  Pipes, similar to exception filters, can be method-scoped, controller-scoped,
+    or global-scoped. Additionally, a pipe can be param-scoped. In the example
+    below, we'll directly tie the pipe instance to the route param @Body()
+    decorator.
+      Code:
+        @Post()
+        async create(
+          @Body(new ValidationPipe()) createCatDto: CreateCatDto,
+        ) {
+          this.catsService.create(createCatDto);
+        }
+    Param-scoped pipes are useful when the validation logic concerns only one
+      specified parameter.
+    Alternatively, to set up a pipe at a method level, use the @UsePipes()
+      decorator.
+        Code:
+          @Post()
+          @UsePipes(new ValidationPipe())
+          async create(@Body() createCatDto: CreateCatDto) {
+            this.catsService.create(createCatDto);
+          }
+    Alternatively, pass the class (not an instance), thus leaving instantiation
+      up to the framework, and enabling dependency injection.
+        Code:
+          @Post()
+          @UsePipes(ValidationPipe)
+          async create(@Body() createCatDto: CreateCatDto) {
+            this.catsService.create(createCatDto);
+          }
+    Global scope:
+      Code:
+        async function bootstrap() {
+          const app = await NestFactory.create(ApplicationModule);
+          app.useGlobalPipes(new ValidationPipe());
+          await app.listen(3000);
+        }
+        bootstrap();
+      Notice
+        In the case of hybrid apps the useGlobalPipes() method doesn't set
+          up pipes for gateways and micro services. For "standard" (non-hybrid)
+          microservice apps, useGlobalPipes() does mount pipes globally.
+      See the docs for global pipe with dependency injection.
+  Transformation pipes
+    The code for ParseIntPipe:
+      Code:
+        import { PipeTransform, Injectable, ArgumentMetadata, BadRequestException } from '@nestjs/common';
+
+        @Injectable()
+        export class ParseIntPipe implements PipeTransform<string, number> {
+          transform(value: string, metadata: ArgumentMetadata): number {
+            const val = parseInt(value, 10);
+            if (isNaN(val)) {
+              throw new BadRequestException('Validation failed');
+            }
+            return val;
+          }
+        }
+    How it's used:
+      Code:
+        @Get(':id')
+        async findOne(@Param('id', new ParseIntPipe()) id) {
+          return await this.catsService.findOne(id);
+        }
+    With this in place, ParseIntPipe will be executed before the request
+      reaches the corresponding handler, ensuring that it will always
+      receive an integer for the id parameter.
+    Another example would be to get the user by ID:
+      Code (use):
+        @Get(':id')
+        findOne(@Param('id', UserByIdPipe) userEntity: UserEntity) {
+          return userEntity;
+        }
+      We leave the implementation of this pipe to the reader, but note that
+        like all other transformation pipes, it receives an input value
+        (an id) and returns an output value (a UserEntity object). This
+        can make your code more declarative and DRY by abstracting
+        boilerplate code out of your handler and into a common pipe.
+
+Guards
+
+  Guards have a single responsibility. They determine whether a given request
+    will be handled by the route handler or not, depending on certain
+    conditions (like permissions, roles, ACLs, etc.) present at run-time.
+    This is often referred to as authorization. Authorization (and its
+    cousin, authentication, with which it usually collaborates) has typically
+    been handled by middleware in traditional Express applications.
+    Middleware is a fine choice for authentication, since things like token
+    validation and attaching properties to the request object are not
+    strongly connected with a particular route context (and its metadata).
+  But middleware, by its nature, is dumb. It doesn't know which handler will
+    be executed after calling the next() function. On the other hand,
+    Guards have access to the ExecutionContext instance, and thus know
+    exactly what's going to be executed next. They're designed, much like
+    exception filters, pipes, and interceptors, to let you interpose
+    processing logic at exactly the right point in the request/response
+    cycle, and to do so declaratively. This helps keep your code DRY and
+    declarative.
+  Guards are executed after each middleware, but before any interceptor or pipe.
+  A guard is a class annotated with the @Injectable() decorator.
+  Guards should implement the CanActivate interface.
+  Authorization example.
+    Check caller has sufficient permissions.
+    The AuthGuard that we'll build now assumes an authenticated user (and
+      that, therefore, a token is attached to the request headers). It will
+      extract and validate the token, and use the extracted information to
+      determine whether the request can proceed or not.
+    Code:
+      import { Injectable, CanActivate, ExecutionContext } from '@nestjs/common';
+      import { Observable } from 'rxjs';
+
+      @Injectable()
+      export class AuthGuard implements CanActivate {
+        canActivate(
+          context: ExecutionContext,
+        ): boolean | Promise<boolean> | Observable<boolean> {
+          const request = context.switchToHttp().getRequest();
+          return validateRequest(request);
+        }
+      }
+  Guards return a boolean, either synchronously or async, via a Promise or
+    an rxjs Observable.
+  Nest uses the return value to control the next action:
+    If it returns true, the request will be processed.
+    If it returns false, Nest will deny the request.
+  The canActivate() function takes a single argument, the ExecutionContext
+    instance. The ExecutionContext inherits from ArgumentsHost. We saw
+    ArgumentsHost before in the exception filters chapter. There, we saw
+    that it's a wrapper around arguments that have been passed to the
+    original handler, and contains different arguments arrays based on
+    the type of the application.
+  Execution context
+    By extending ArgumentsHost, ExecutionContext provides additional
+      details about the current execution process. Here's what it looks like:
+    Code:
+      export interface ExecutionContext extends ArgumentsHost {
+        getClass<T = any>(): Type<T>;
+        getHandler(): Function;
+      }
+    The getHandler() method returns a reference to the handler about to be
+      invoked. The getClass() method returns the type of the Controller
+      class which this particular handler belongs to. For example, if the
+      currently processed request is a POST request, destined for the
+      create() method on the CatsController, getHandler() will return a
+      reference to the create() method and getClass() will return a
+      CatsControllertype (not instance).
+  Binding guards
+    Like pipes and exception filters, guards can be controller-scoped,
+      method-scoped, or global-scoped. Below, we set up a controller-scoped
+      guard using the @UseGuards() decorator. This decorator may take a
+      single argument, or a comma-separated list of arguments. This lets
+      you easily apply the appropriate set of guards with one declaration.
+    Code:
+      @Controller('cats')
+      @UseGuards(RolesGuard)
+      export class CatsController {}
+    In order to set up a global guard, use the useGlobalGuards() method of
+      the Nest application instance.
+        Code:
+          const app = await NestFactory.create(ApplicationModule);
+          app.useGlobalGuards(new RolesGuard());
+    Notice
+      In the case of hybrid apps the useGlobalGuards() method doesn't set
+        up guards for gateways and micro services. For "standard"
+        (non-hybrid) microservice apps, useGlobalGuards() does mount the
+        guards globally.
+    As with everything else, you do a special declaration to get dependency
+      injection for your global guard.  See the docs.
+  Role-base authentication example.
+    Initial code:
+      import { Injectable, CanActivate, ExecutionContext } from '@nestjs/common';
+      import { Observable } from 'rxjs';
+
+      @Injectable()
+      export class RolesGuard implements CanActivate {
+        canActivate(
+          context: ExecutionContext,
+        ): boolean | Promise<boolean> | Observable<boolean> {
+          return true;
+        }
+      }
+    Here, it always returns 'true', so everything is allowed.
+  Reflection
+    Our RolesGuard is working, but it's not very smart yet. We're not yet
+      taking advantage of the most important guard feature - the execution
+      context. It doesn't yet know about roles, or which roles are allowed
+      for each handler. The CatsController, for example, could have
+      different permission schemes for different routes. Some might be
+      available only for an admin user, and others could be open for
+      everyone. How can we match roles to routes in a flexible and
+      reusable way?
+    This is where custom metadata comes into play. Nest provides the ability
+      to attach custom metadata to route handlers through the @SetMetadata()
+      decorator. This metadata supplies our missing role data, which a smart
+      guard needs to make decisions. Let's take a look at using @SetMetadata().
+        Code:
+          @Post()
+          @SetMetadata('roles', ['admin'])
+          async create(@Body() createCatDto: CreateCatDto) {
+            this.catsService.create(createCatDto);
+          }
+    With the construction above, we attached the roles metadata (roles is a
+      key, while ['admin'] is a particular value) to the create() method.
+      While this works, it's not good practice to use @SetMetadata()
+      directly in your routes. Instead, create your own decorators, as
+      shown below.
+        Code:
+          // roles.decorator.ts
+          import { SetMetadata } from '@nestjs/common';
+          export const Roles = (...roles: string[]) => SetMetadata('roles', roles);
+    This approach is much cleaner and more readable, and is strongly typed.
+      Now that we have a custom @Roles() decorator, we can use it to decorate
+      the create() method.
+        Code:
+          @Post()
+          @Roles('admin')
+          async create(@Body() createCatDto: CreateCatDto) {
+            this.catsService.create(createCatDto);
+          }
+    We want to make the return value conditional based on the comparing the
+      roles assigned to the current user to the actual roles required by the
+      current route being processed. In order to access the route's role(s)
+      (custom metadata), we'll use the Reflector helper class, which is
+      provided out of the box by the framework and exposed from the
+      @nestjs/core package.
+        Code:
+          import { Injectable, CanActivate, ExecutionContext } from '@nestjs/common';
+          import { Observable } from 'rxjs';
+          import { Reflector } from '@nestjs/core';
+
+          @Injectable()
+          export class RolesGuard implements CanActivate {
+            constructor(private readonly reflector: Reflector) {}
+
+            canActivate(context: ExecutionContext): boolean {
+              const roles = this.reflector.get<string[]>('roles', context.getHandler());
+              if (!roles) {
+                return true;
+              }
+              const request = context.switchToHttp().getRequest();
+              const user = request.user;
+              const hasRole = () => user.roles.some((role) => roles.includes(role));
+              return user && user.roles && hasRole();
+            }
+          }
+      In the node.js world, it's common practice to attach the authorized
+        user to the request object. Thus, in our sample code above, we are
+        assuming that request.user contains the user instance and allowed
+        roles. In your app, you will probably make that association in your
+        custom authentication guard (or middleware).
+  When a user with insufficient privileges requests an endpoint, Nest
+    automatically returns the following response:
+      {
+        "statusCode": 403,
+        "message": "Forbidden resource"
+      }
+    Note that behind the scenes, when a guard returns false, the framework
+      throws a ForbiddenException. If you want to return a different error
+      response, you should throw your own specific exception.
+        Code:
+          throw new UnauthorizedException();
+    Any exception thrown by a guard will be handled by the exceptions layer
+      (global exceptions filter and any exceptions filters that are applied
+      to the current context).
+
+Interceptors
+
+  Overview
+    An interceptor is a class annotated with the @Injectable() decorator.
+    Interceptors should implement the NestInterceptor interface.
+    Interceptors have a set of useful capabilities which are inspired by
+      the Aspect Oriented Programming (AOP) technique.
+    They make it possible to:
+      bind extra logic before / after method execution
+      transform the result returned from a function
+      transform the exception thrown from a function
+      extend the basic function behavior
+      completely override a function depending on specific conditions
+        (e.g., for caching purposes)
+    Each interceptor implements the intercept() method, which takes two
+      arguments.
+  Execution context
+    The first one is the ExecutionContext instance (exactly
+      the same object as for guards).
+  Call handler
+    The second argument is a CallHandler. The CallHandler interface
+      implements the handle() method, which you can use to invoke the
+      route handler method at some point in your interceptor. If you
+      don't call the handle() method in your implementation of the
+      intercept() method, the route handler method won't be executed
+      at all.
+    The handle() method returns an Observable, we can use powerful RxJS
+      operators to further manipulate the response.
+    Consider, for example, an incoming POST /cats request. This request
+      is destined for the create() handler defined inside the CatsController.
+      If an interceptor which does not call the handle() method is called
+      anywhere along the way, the create() method won't be executed. Once
+      handle() is called (and its Observable has been returned), the
+      create() handler will be triggered. And once the response stream
+      is received via the Observable, additional operations can be
+      performed on the stream, and a final result returned to the caller.
+  Example - logging, both before and after, and timing of the 'handle' call.
+    Code:
+      import { Injectable, NestInterceptor, ExecutionContext, CallHandler } from '@nestjs/common';
+      import { Observable } from 'rxjs';
+      import { tap } from 'rxjs/operators';
+
+      @Injectable()
+      export class LoggingInterceptor implements NestInterceptor {
+        intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
+          console.log('Before...');
+
+          const now = Date.now();
+          return next
+            .handle()
+            .pipe(
+              tap(() => console.log(`After... ${Date.now() - now}ms`)),
+            );
+        }
+      }
+  The NestInterceptor<T, R> is a generic interface in which T indicates
+    the type of an Observable<T> (supporting the response stream), and
+    R is the type of the value wrapped by Observable<R>.
+  Notice
+    Interceptors, like controllers, providers, guards, and so on, can
+      inject dependencies through their constructor.
+  Since handle() returns an RxJS Observable, we have a wide choice of
+    operators we can use to manipulate the stream. In the example above,
+    we used the tap() operator, which invokes our anonymous logging function
+    upon graceful or exceptional termination of the observable stream, but
+    doesn't otherwise interfere with the response cycle.
+  Binding interceptors
+    In order to set up the interceptor, we use the @UseInterceptors()
+      decorator imported from the @nestjs/common package. Like pipes and
+      guards, interceptors can be controller-scoped, method-scoped, or
+      global-scoped.
+    Code:
+      @UseInterceptors(LoggingInterceptor)
+      export class CatsController {}
+    Note that we passed the LoggingInterceptor type (instead of an instance),
+      leaving responsibility for instantiation to the framework and enabling
+      dependency injection. As with pipes, guards, and exception filters, we
+      can also pass an in-place instance.
+    Usual global dependency injection magic applies.
+  Response mapping
+    We already know that handle() returns an Observable. The stream contains
+      the value returned from the route handler, and thus we can easily
+      mutate it using RxJS's map() operator.
+    Warning
+      The response mapping feature doesn't work with the library-specific
+        response strategy (using the @Res() object directly is forbidden).
+    Let's create the TransformInterceptor, which will modify each response
+      in a trivial way to demonstrate the process. It will use RxJS's map()
+      operator to assign the response object to the data property of a
+      newly created object, returning the new object to the client.
+        Code:
+          // transform.interceptor.ts
+          import { Injectable, NestInterceptor, ExecutionContext, CallHandler } from '@nestjs/common';
+          import { Observable } from 'rxjs';
+          import { map } from 'rxjs/operators';
+
+          export interface Response<T> {
+            data: T;
+          }
+
+          @Injectable()
+          export class TransformInterceptor<T> implements NestInterceptor<T, Response<T>> {
+            intercept(context: ExecutionContext, next: CallHandler): Observable<Response<T>> {
+              return next.handle().pipe(map(data => ({ data })));
+            }
+          }
+      With the above construction, when someone calls the GET /cats
+        endpoint, the response would look like the following (assuming
+        that route handler returns an empty array []):
+          {
+            "data": []
+          }
+    Nest interceptors work with both synchronous and asynchronous
+      intercept() methods. You can simply switch the method to async
+      if necessary.
+    Interceptors have great value in creating re-usable solutions to
+      requirements that occur across an entire application. For example,
+      imagine we need to transform each occurrence of a null value to an
+      empty string ''. We can do it using one line of code and bind the
+      interceptor globally so that it will automatically be used by each
+      registered handler.
+        Code:
+          import { Injectable, NestInterceptor, ExecutionContext, CallHandler } from '@nestjs/common';
+          import { Observable } from 'rxjs';
+          import { map } from 'rxjs/operators';
+
+          @Injectable()
+          export class ExcludeNullInterceptor implements NestInterceptor {
+            intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
+              return next
+                .handle()
+                .pipe(map(value => value === null ? '' : value ));
+            }
+          }
+  Exception mapping
+    Another interesting use-case is to take advantage of RxJS's
+      catchError() operator to override thrown exceptions:
+        Code:
+          // errors.interceptor.ts
+          import {
+            Injectable,
+            NestInterceptor,
+            ExecutionContext,
+            BadGatewayException,
+            CallHandler,
+          } from '@nestjs/common';
+          import { Observable, throwError } from 'rxjs';
+          import { catchError } from 'rxjs/operators';
+
+          @Injectable()
+          export class ErrorsInterceptor implements NestInterceptor {
+            intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
+              return next
+                .handle()
+                .pipe(
+                  catchError(err => throwError(new BadGatewayException())),
+                );
+            }
+          }
+  Stream overriding
+    The docs have a caching example, mainly to say [...] the response
+      (a hardcoded, empty array) will be returned immediately. In order to
+      create a generic solution, you can take advantage of Reflector and
+      create a custom decorator.
+  More operators
+    The possibility of manipulating the stream using RxJS operators gives
+      us many capabilities. Let's consider another common use case. Imagine
+      you would like to handle timeouts on route requests. When your
+      endpoint doesn't return anything after a period of time, you want
+      to terminate with an error response. The following construction
+      enables this:
+        Code:
+          // timeout.interceptor.ts
+          import { Injectable, NestInterceptor, ExecutionContext, CallHandler } from '@nestjs/common';
+          import { Observable } from 'rxjs';
+          import { timeout } from 'rxjs/operators';
+
+          @Injectable()
+          export class TimeoutInterceptor implements NestInterceptor {
+            intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
+              return next.handle().pipe(timeout(5000))
+            }
+          }
+      After 5 seconds, request processing will be canceled.
