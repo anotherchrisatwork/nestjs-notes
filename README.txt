@@ -1303,3 +1303,191 @@ Custom route decorators
             async findOne(@User(new ValidationPipe()) user: UserEntity) {
               console.log(user);
             }
+
+Custom providers
+
+  Overview
+    There are a lot of scenarios when you might want to bind something
+      directly to the Nest inversion of control container. For example,
+      any constant values, configuration objects created based on the
+      current environment, external libraries, or pre-calculated values
+      that depends on few other defined providers. Moreover, you are able
+      to override default implementations, e.g. use different classes or
+      make use of various test doubles (for testing purposes) when needed.
+    One essential thing that you should always keep in mind is that Nest
+      uses tokens to identify dependencies. Usually, the auto-generated
+      tokens are equal to classes. If you want to create a custom provider,
+      you'd need to choose a token. Mostly, the custom tokens are
+      represented by either plain strings or symbols. Following best
+      practices, you should hold those tokens in the separated file, for
+      example, inside constants.ts.
+  Use value
+    The useValue syntax is useful when it comes to either define a
+      constant value, put external library into Nest container, or
+      replace a real implementation with the mock object.
+    Code:
+      // definition
+      import { connection } from './connection';
+
+      const connectionProvider = {
+        provide: 'CONNECTION',
+        useValue: connection,
+      };
+
+      @Module({
+        providers: [connectionProvider],
+      })
+      export class ApplicationModule {}
+
+      // use
+      @Injectable()
+      export class CatsRepository {
+        constructor(@Inject('CONNECTION') connection: Connection) {}
+      }
+    Useful for setting up mocks as well.
+  Use class
+    The useClass syntax allows you using different class per chosen factors.
+    E.g.:
+      Code:
+        const configServiceProvider = {
+          provide: ConfigService,
+          useClass:
+            process.env.NODE_ENV === 'development'
+              ? DevelopmentConfigService
+              : ProductionConfigService,
+        };
+
+        @Module({
+          providers: [configServiceProvider],
+        })
+        export class ApplicationModule {}
+      In this case, even if any class depends on ConfigService, Nest will
+        inject an instance of the provided class (DevelopmentConfigService
+        or ProductionConfigService) instead.
+  Use factory
+    The useFactory is a way of creating providers dynamically. The
+      actual provider will be equal to a returned value of the factory
+      function. The factory function can either depend on several different
+      providers or stay completely independent. It means that factory may
+      accept arguments, that Nest will resolve and pass during the
+      instantiation process. Additionally, this function can return
+      value asynchronously.
+    E.g.:
+      Code:
+        const connectionFactory = {
+          provide: 'CONNECTION',
+          useFactory: (optionsProvider: OptionsProvider) => {
+            const options = optionsProvider.get();
+            return new DatabaseConnection(options);
+          },
+          inject: [OptionsProvider],
+        };
+
+        @Module({
+          providers: [connectionFactory],
+        })
+        export class ApplicationModule {}
+  Export custom provider
+    In order to export a custom provider, we can either use a token or
+      a whole object.  See the docs.
+
+Asynchronous providers
+
+  Overview
+    When the application start has to be delayed until some asynchronous
+      tasks will be finished, for example, until the connection with the
+      database will be established, you should consider using asynchronous
+      providers. In order to create an async provider, we use the
+      useFactory. The factory has to return a Promise (thus async
+      functions fit as well).
+    E.g.:
+      Code:
+        {
+          provide: 'ASYNC_CONNECTION',
+          useFactory: async () => {
+            const connection = await createConnection(options);
+            return connection;
+          },
+        }
+  Injection
+    The asynchronous providers can be simply injected to other components
+      by their tokens (in the above case, by the ASYNC_CONNECTION token).
+      Each class that depends on the asynchronous provider will be
+      instantiated once the async provider is already resolved.
+
+Circular dependencies
+
+  Nest permits creating circular dependencies between both providers and
+    modules, but we advise you to avoid whenever it's possible. See the
+    docs.
+
+Injection scopes
+
+  Overview
+    For the people coming from different languages, it might be awkward
+      that in Nest almost everything is shared across the incoming
+      requests. We have a connection pool to the database, singleton
+      services with a global state etc. Generally, Node.js doesn't
+      follow request/response Multi-Threaded Stateless Model in which
+      every request is being processed by the separate thread. Hence,
+      using singleton instances is fully safe for our applications.
+    However, there are edge-cases when request-based lifetime of the
+      controller may be an intentional behavior, for instance per-request
+      cache in GraphQL applications, request tracking or multi-tenancy.
+  Scopes
+    Basically, every provider can act as a singleton, be request-scoped,
+      and be switched to the transient mode. See the following table to
+      get familiar with the differences between them.
+    SINGLETON	Each provider can be shared across multiple classes. The
+      provider lifetime is strictly tied to the application lifecycle.
+      Once the application has bootstrapped, all providers are already
+      instantiated. The singleton scope is being used by default.
+    REQUEST	A new instance of the provider is going to be exclusively
+      created for every incoming request and garbage collected after
+      the request processing is completed.
+    TRANSIENT	Transient providers cannot be shared between providers.
+      Every time when another provider asks the Nest container for
+      particular transient provider, the container will create a new,
+      dedicated instance.
+  See the docs.
+
+Lifecycle Events
+
+  Overview
+    Every application element has a lifecycle managed by Nest. Nest
+      offers lifecycle hooks that provide visibility into key life
+      moments and the ability to act when they occur.
+  Lifecycle sequence
+    After creating a injectable/controller by calling its constructor,
+      Nest calls the lifecycle hook methods in the following sequence
+      at specific moments:
+    OnModuleInit	Called once the host module has been initialized
+    OnApplicationBootstrap	Called once the application has fully
+      started and is bootstrapped
+    OnModuleDestroy	Cleanup just before Nest destroys the host
+      module (app.close() method has been evaluated)
+    OnApplicationShutdown	Responds to the system signals (when
+      application gets shutdown by e.g. SIGTERM)
+  Usage
+    Each lifecycle hook is represented by interface. Interfaces are
+      technically optional because they do not exist anyway after
+      TypeScript compilation. Nonetheless, it's a good practice to
+      use them in order to benefit from strong typing and editor
+      tooling.
+    E.g.:
+      Code:
+        import { Injectable, OnModuleInit } from '@nestjs/common';
+
+        @Injectable()
+        export class UsersService implements OnModuleInit {
+          onModuleInit() {
+            console.log(`The module has been initialized.`);
+          }
+        }
+  Additionally, both OnModuleInit and OnApplicationBootstrap hooks
+    allow you to defer the application initialization process
+    (return a Promise or mark the method as async).
+  OnApplicationShutdown
+    The OnApplicationShutdown responds to the system signals
+      (when application gets shutdown by e.g. SIGTERM). Use this
+      hook to gracefully shutdown a Nest application.
